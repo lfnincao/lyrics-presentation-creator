@@ -4,8 +4,13 @@ include "settings/presentationSettings.php";
 // Read input.txt file
 $psalmsAndHymns = file('input.txt', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
 
-if (!$psalmsAndHymns) {
+if ($psalmsAndHymns === false) {
     echo "\nFailed to open input.txt file\n";
+    exit;
+}
+
+if (count($psalmsAndHymns) === 0) {
+    echo "\ninput.txt is empty\n";
     exit;
 }
 
@@ -13,7 +18,7 @@ if (!$psalmsAndHymns) {
 $psalmsAndHymns = array_map('trim', $psalmsAndHymns);
 
 $allSongVersesInTxt = '';
-$pageNumber = 1;
+$pageNumber = 0;
 
 // Loop through each psalm/hymn
 foreach ($psalmsAndHymns as $psalmOrHymn) {
@@ -27,6 +32,7 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     // Then extract any subsequent numbers (verses)
     $matches = [];
     if (!preg_match('/[hHpP].*?(\d+)(.*)/', $psalmOrHymn, $matches)) {
+        echo "\nSkipped unrecognized line: " . $psalmOrHymn . "\n";
         continue;
     }
 
@@ -68,30 +74,43 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     }
 
     if (empty($verses)) {
-        // Include all txt files for the song
-        $verses = range(1, count(glob('txt/'. $book . '-' . $number . '-*.txt')));
+        $verses = getAllVerseNumbers($book, $number);
+        if (empty($verses)) {
+            echo "\nNo verse files found for " . $book . ' ' . $number . "\n";
+            continue;
+        }
     }
 
     // Loop through each verse
-    $verseCount = 0;
     $versesPerSlide = 0;
     $slideContent = '';
 
     foreach ($verses as $verse) {
-        $verseTxt = file_get_contents('txt/'. $book . '-' . $number . '-' . trim($verse) . '.txt');
+        $versePath = 'txt/' . $book . '-' . $number . '-' . trim($verse) . '.txt';
+        if (!is_file($versePath)) {
+            echo "\nMissing verse file: " . $versePath . "\n";
+            continue;
+        }
+
+        $verseTxt = file_get_contents($versePath);
+        if ($verseTxt === false) {
+            echo "\nFailed to read verse file: " . $versePath . "\n";
+            continue;
+        }
 
         if ($book == "HYMN" && $number == 1) {
             $verseLines = explode("\n", $verseTxt);
             $part1 = array_slice($verseLines, 0, 9);
             $part2 = array_slice($verseLines, 9);
 
-            $allSongVersesInTxt .= getSlideXml(implode("\n",$part1), ++$pageNumber, $book, $number, [1]);
-            $allSongVersesInTxt .= getSlideXml(implode("\n",$part2), ++$pageNumber, $book, $number, [1]);
-            continue;
+            $allSongVersesInTxt .= getSlideXml(implode("\n", $part1), ++$pageNumber, $book, $number, [1]);
+            $allSongVersesInTxt .= getSlideXml(implode("\n", $part2), ++$pageNumber, $book, $number, [1]);
+            $slideContent = '';
+            $versesPerSlide = 0;
+            break;
         }
 
-        $verseLines = explode("\n", $verseTxt);
-        $verseLineCount = count(array_filter($verseLines));
+        $verseLineCount = countNonemptyLines($verseTxt);
 
         if ($versesPerSlide + $verseLineCount > 10 && $versesPerSlide != 0) {
             // We need to start a new slide
@@ -102,7 +121,6 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
 
         $versesPerSlide += $verseLineCount;
         $slideContent .= $verseTxt . "\n";
-        $verseCount++;
     }
 
     if ($versesPerSlide != 0) {
@@ -111,16 +129,18 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     }
 }
 
-$contentFile = 'content.xml';
-if ($allSongVersesInTxt) {
-    try {
-        file_put_contents($contentFile, $beginPresentation . $allSongVersesInTxt . $endPresentation);
-        echo $contentFile ." created successfully";
-    } catch (\Exception $e) {
-        echo "Failed to create file ". $contentFile;
-        exit;
-    }
+if (!$allSongVersesInTxt) {
+    echo "\nNo slides were generated. Check input.txt and verse files.\n";
+    exit;
 }
+
+$contentFile = 'content.xml';
+$written = file_put_contents($contentFile, $beginPresentation . $allSongVersesInTxt . $endPresentation);
+if ($written === false) {
+    echo "\nFailed to create file " . $contentFile . "\n";
+    exit;
+}
+echo $contentFile . " created successfully";
 
 $zip = new ZipArchive();
 $templateFile = "settings/template";
@@ -140,27 +160,85 @@ if ($zip->open($presentationFile, ZipArchive::CREATE) === true) {
     // Clean up the temporary content file
     if (file_exists($contentFile)) {
         unlink($contentFile);
-        echo "\nFile ".$contentFile.' deleted successfully';
+        echo "\nFile " . $contentFile . ' deleted successfully';
     } else {
-        echo "\nFile ".$contentFile.' does not exist';
+        echo "\nFile " . $contentFile . ' does not exist';
         exit;
     }
-    echo "\nPresentation file created: ". $presentationFile ."\n";
+    echo "\nPresentation file created: " . $presentationFile . "\n";
 } else {
-    echo "\nFailed to modify presentation file: ". $presentationFile;
+    echo "\nFailed to modify presentation file: " . $presentationFile;
     // Clean up the failed presentation file
     if (file_exists($presentationFile)) {
         unlink($presentationFile);
     }
 }
 
+function countNonemptyLines($text)
+{
+    $count = 0;
+    foreach (explode("\n", $text) as $line) {
+        if (trim($line) !== '') {
+            $count++;
+        }
+    }
+    return $count;
+}
+
+function getAllVerseNumbers($book, $number)
+{
+    $files = glob('txt/' . $book . '-' . $number . '-*.txt');
+    $verses = [];
+    $prefix = $book . '-' . $number . '-';
+
+    foreach ($files as $file) {
+        $basename = basename($file, '.txt');
+        if (preg_match('/^' . preg_quote($prefix, '/') . '(\d+)$/', $basename, $match)) {
+            $verses[] = (int)$match[1];
+        }
+    }
+
+    sort($verses, SORT_NUMERIC);
+    return $verses;
+}
+
+function formatLyricLineForXml($line)
+{
+    $parts = preg_split('/(<i>|<\/i>)/', $line, -1, PREG_SPLIT_DELIM_CAPTURE);
+    $xml = '';
+    $inItalic = false;
+
+    foreach ($parts as $part) {
+        if ($part === '<i>') {
+            $inItalic = true;
+            continue;
+        }
+        if ($part === '</i>') {
+            $inItalic = false;
+            continue;
+        }
+        if ($part === '') {
+            continue;
+        }
+
+        $style = $inItalic ? 'T3' : 'T2';
+        $xml .= '<text:span text:style-name="' . $style . '">' .
+            htmlspecialchars($part, ENT_XML1 | ENT_QUOTES, 'UTF-8') .
+            '</text:span>';
+    }
+
+    return $xml;
+}
+
 function getSlideXml($verseTxt, $pageNumber, $book, $number, $verses)
 {
-    if (strtoupper($book) == "HYMN" && ($number == '1' || $number == '2')) {
-        $title = "Hymn ".$number.": The Apostles' Creed";
+    if (strtoupper($book) == "HYMN" && $number == '1') {
+        $title = "Hymn " . $number . ": The Apostles' Creed";
     } else {
-        $title =  ucfirst(strtolower($book)) .' '. $number . ': '. implode(", ", $verses);
+        $title = ucfirst(strtolower($book)) . ' ' . $number . ': ' . implode(", ", $verses);
     }
+
+    $title = htmlspecialchars($title, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
     $beginSlide = '<draw:page draw:name="page'.$pageNumber.'" draw:style-name="dp1" draw:master-page-name="Master1-Office-Theme" '.
     'presentation:presentation-page-layout-name="AL1T0"><office:forms form:automatic-focus="false" form:apply-design-mode="false"/>'.
@@ -182,16 +260,13 @@ function getSlideXml($verseTxt, $pageNumber, $book, $number, $verses)
     $formattedLines = '';
     $count = 0;
     foreach ($lines as $line) {
-        if (empty($line)) {
+        if (trim($line) === '') {
             continue;
         }
         if ($count > 0 && preg_match('/^\d/', $line)) {
             $formattedLines .= '<text:p text:style-name="P3"><text:span text:style-name="T2"></text:span></text:p>';
         }
-        // find and format italics
-        $line = str_replace("<i>", '</text:span><text:span text:style-name="T3">', $line);
-        $line = str_replace("</i>", '</text:span><text:span text:style-name="T2">', $line);
-        $formattedLines .= '<text:p text:style-name="P3"><text:span text:style-name="T2">' . $line .'</text:span></text:p>';
+        $formattedLines .= '<text:p text:style-name="P3">' . formatLyricLineForXml($line) . '</text:p>';
         $count++;
     }
 
