@@ -31,7 +31,7 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     // flexible parsing: find H or P (case insensitive), then find first number (hymn/psalm number)
     // Then extract any subsequent numbers (verses)
     $matches = [];
-    if (!preg_match('/[hHpP].*?(\d+)(.*)/', $psalmOrHymn, $matches)) {
+    if (!preg_match('/[hHpP].*?((?:[A-Za-z]\d+|\d+[A-Za-z]?))(.*)/i', $psalmOrHymn, $matches)) {
         echo "\nSkipped unrecognized line: " . $psalmOrHymn . "\n";
         continue;
     }
@@ -86,9 +86,9 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     $slideContent = '';
 
     foreach ($verses as $verse) {
-        $versePath = 'txt/' . $book . '-' . $number . '-' . trim($verse) . '.txt';
-        if (!is_file($versePath)) {
-            echo "\nMissing verse file: " . $versePath . "\n";
+        $versePath = resolveVersePath($book, $number, $verse);
+        if ($versePath === null) {
+            echo "\nMissing verse file: " . $book . '-' . $number . '-' . trim($verse) . ".txt\n";
             continue;
         }
 
@@ -185,9 +185,25 @@ function countNonemptyLines($text)
     return $count;
 }
 
-function getAllVerseNumbers($book, $number)
+function resolveVersePath($book, $number, $verse)
 {
-    $files = glob('txt/' . $book . '-' . $number . '-*.txt');
+    $file = $book . '-' . $number . '-' . trim($verse) . '.txt';
+    $mainPath = 'txt/' . $file;
+    if (is_file($mainPath)) {
+        return $mainPath;
+    }
+
+    $augmentPath = 'txt/augment/' . $file;
+    if (is_file($augmentPath)) {
+        return $augmentPath;
+    }
+
+    return null;
+}
+
+function getVerseNumbersFromDir($dir, $book, $number)
+{
+    $files = glob($dir . $book . '-' . $number . '-*.txt');
     $verses = [];
     $prefix = $book . '-' . $number . '-';
 
@@ -200,6 +216,16 @@ function getAllVerseNumbers($book, $number)
 
     sort($verses, SORT_NUMERIC);
     return $verses;
+}
+
+function getAllVerseNumbers($book, $number)
+{
+    $mainVerses = getVerseNumbersFromDir('txt/', $book, $number);
+    if (!empty($mainVerses)) {
+        return $mainVerses;
+    }
+
+    return getVerseNumbersFromDir('txt/augment/', $book, $number);
 }
 
 function formatLyricLineForXml($line)
