@@ -18,6 +18,7 @@ if (count($psalmsAndHymns) === 0) {
 $psalmsAndHymns = array_map('trim', $psalmsAndHymns);
 
 $allSongVersesInTxt = '';
+$pdfSongs = [];
 $pageNumber = 0;
 
 // Loop through each psalm/hymn
@@ -84,6 +85,8 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     // Loop through each verse
     $versesPerSlide = 0;
     $slideContent = '';
+    $pdfVerses = [];
+    $includedVerses = [];
 
     foreach ($verses as $verse) {
         $versePath = resolveVersePath($book, $number, $verse);
@@ -97,6 +100,9 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
             echo "\nFailed to read verse file: " . $versePath . "\n";
             continue;
         }
+
+        $pdfVerses[] = $verseTxt;
+        $includedVerses[] = $verse;
 
         if ($book == "HYMN" && $number == 1) {
             $verseLines = explode("\n", $verseTxt);
@@ -126,6 +132,9 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     if ($versesPerSlide != 0) {
         // We still have content to add to the last slide
         $allSongVersesInTxt .= getSlideXml($slideContent, ++$pageNumber, $book, $number, $verses);
+    }
+    if ($pdfVerses) {
+        $pdfSongs[] = ['title' => getSongTitle($book, $number, $includedVerses), 'verses' => $pdfVerses];
     }
 }
 
@@ -166,12 +175,163 @@ if ($zip->open($presentationFile, ZipArchive::CREATE) === true) {
         exit;
     }
     echo "\nPresentation file created: " . $presentationFile . "\n";
+    if ($pdfSongs) {
+        $pdfFile = 'Lyrics.pdf';
+        if (!writeLyricsPdf($pdfFile, $pdfSongs)) {
+            // A PDF viewer may lock the previous output on Windows.
+            $pdfFile = 'Lyrics-large-print.pdf';
+            if (!writeLyricsPdf($pdfFile, $pdfSongs)) {
+                echo "Failed to create PDF file: " . $pdfFile . "\n";
+                $pdfFile = null;
+            }
+        }
+        if ($pdfFile !== null) {
+            echo "PDF file created: " . $pdfFile . "\n";
+        }
+    }
 } else {
     echo "\nFailed to modify presentation file: " . $presentationFile;
     // Clean up the failed presentation file
     if (file_exists($presentationFile)) {
         unlink($presentationFile);
     }
+}
+
+// The PDF is independent of the ODP: each song starts a new A4 page and may continue on later pages.
+function writeLyricsPdf($filename, $songs)
+{
+    $pageWidth = 595.28;
+    $pageHeight = 841.89;
+    $margin = 42;
+    $contentWidth = $pageWidth - 2 * $margin;
+    $objects = [1 => null, 2 => null,
+        3 => '<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding /WinAnsiEncoding >>'];
+    $pageIds = [];
+    $nextId = 4;
+
+    foreach ($songs as $song) {
+        $fontSize = 22.0;
+        $titleSize = 28.0;
+        $lineHeight = $fontSize * 1.3;
+        $titleLines = wrapPdfLines([pdfText($song['title'])], $contentWidth, $titleSize);
+        $commands = ["BT", "0 g", '/F2 ' . pdfNumber($titleSize) . ' Tf'];
+        $y = $pageHeight - $margin - $titleSize;
+        foreach ($titleLines as $line) {
+            $commands[] = '1 0 0 1 ' . pdfNumber($margin) . ' ' . pdfNumber($y) . ' Tm (' . pdfEscape($line) . ') Tj';
+            $y -= $titleSize * 1.25;
+        }
+        $y -= $fontSize;
+        $commands[] = '/F2 ' . pdfNumber($fontSize) . ' Tf';
+        foreach ($song['verses'] as $verseIndex => $verse) {
+            $verseLines = [];
+            foreach (preg_split('/\R/u', trim($verse)) as $line) {
+                foreach (wrapPdfLines([pdfText(trim($line))], $contentWidth, $fontSize) as $wrappedLine) {
+                    $verseLines[] = $wrappedLine;
+                }
+            }
+            $stanzaHeight = (count($verseLines) - 1) * $lineHeight;
+            $spaceBefore = $verseIndex > 0 ? $lineHeight : 0;
+            // Keep a stanza together when it fits on a fresh page.
+            if ($y - $spaceBefore - $stanzaHeight < $margin &&
+                $stanzaHeight <= $pageHeight - 2 * $margin - $fontSize) {
+                $commands[] = 'ET';
+                addPdfPage($objects, $pageIds, $nextId, $commands, $pageWidth, $pageHeight);
+                $commands = ["BT", "0 g", '/F2 ' . pdfNumber($fontSize) . ' Tf'];
+                $y = $pageHeight - $margin - $fontSize;
+                $spaceBefore = 0;
+            }
+            $y -= $spaceBefore;
+            foreach ($verseLines as $line) {
+                // Exception: a stanza longer than a whole page must continue on the next page.
+                if ($y < $margin) {
+                    $commands[] = 'ET';
+                    addPdfPage($objects, $pageIds, $nextId, $commands, $pageWidth, $pageHeight);
+                    $commands = ["BT", "0 g", '/F2 ' . pdfNumber($fontSize) . ' Tf'];
+                    $y = $pageHeight - $margin - $fontSize;
+                }
+                if ($line !== '') {
+                    $commands[] = '1 0 0 1 ' . pdfNumber($margin) . ' ' . pdfNumber($y) . ' Tm (' . pdfEscape($line) . ') Tj';
+                }
+                $y -= $lineHeight;
+            }
+        }
+        $commands[] = 'ET';
+        addPdfPage($objects, $pageIds, $nextId, $commands, $pageWidth, $pageHeight);
+    }
+
+    $objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+    $objects[2] = '<< /Type /Pages /Kids [' . implode(' ', $pageIds) . '] /Count ' . count($pageIds) . ' >>';
+    ksort($objects);
+    $pdf = "%PDF-1.4\n";
+    $offsets = [0];
+    foreach ($objects as $id => $object) {
+        $offsets[$id] = strlen($pdf);
+        $pdf .= $id . " 0 obj\n" . $object . "\nendobj\n";
+    }
+    $xref = strlen($pdf);
+    $pdf .= 'xref' . "\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
+    foreach ($objects as $id => $object) {
+        $pdf .= sprintf('%010d 00000 n ', $offsets[$id]) . "\n";
+    }
+    $pdf .= 'trailer' . "\n<< /Size " . (count($objects) + 1) . ' /Root 1 0 R >>' .
+        "\nstartxref\n" . $xref . "\n%%EOF\n";
+    if (is_file($filename) && !is_writable($filename)) {
+        return false;
+    }
+    $handle = @fopen($filename, 'wb');
+    if ($handle === false) {
+        return false;
+    }
+    $written = fwrite($handle, $pdf);
+    fclose($handle);
+    return $written === strlen($pdf);
+}
+
+function addPdfPage(&$objects, &$pageIds, &$nextId, $commands, $pageWidth, $pageHeight)
+{
+    $stream = implode("\n", $commands) . "\n";
+    $contentId = $nextId++;
+    $pageId = $nextId++;
+    $objects[$contentId] = '<< /Length ' . strlen($stream) . " >>\nstream\n" . $stream . 'endstream';
+    $objects[$pageId] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' .
+        pdfNumber($pageWidth) . ' ' . pdfNumber($pageHeight) . '] /Resources << /Font << /F2 3 0 R >> >> ' .
+        '/Contents ' . $contentId . ' 0 R >>';
+    $pageIds[] = $pageId . ' 0 R';
+}
+
+function pdfText($text)
+{
+    $text = strip_tags($text);
+    $encoded = iconv('UTF-8', 'Windows-1252//TRANSLIT', $text);
+    return $encoded === false ? '' : preg_replace('/[\x00-\x1f\x7f]/', '', $encoded);
+}
+
+function wrapPdfLines($lines, $width, $fontSize)
+{
+    // Courier glyphs are all 0.6 em wide; wrapping is measured, not guessed.
+    $maxChars = max(1, (int)floor($width / ($fontSize * 0.6)));
+    $wrapped = [];
+    foreach ($lines as $line) {
+        if ($line === '') {
+            $wrapped[] = '';
+            continue;
+        }
+        $wrappedLine = wordwrap($line, $maxChars, "\n", true);
+        foreach (explode("\n", $wrappedLine) as $part) {
+            $wrapped[] = $part;
+        }
+    }
+    return $wrapped;
+}
+
+function pdfEscape($text)
+{
+    return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $text);
+}
+
+function pdfNumber($number)
+{
+    return rtrim(rtrim(sprintf('%.2f', $number), '0'), '.');
 }
 
 function countNonemptyLines($text)
@@ -256,15 +416,17 @@ function formatLyricLineForXml($line)
     return $xml;
 }
 
+function getSongTitle($book, $number, $verses)
+{
+    if (strtoupper($book) === 'HYMN' && $number == '1') {
+        return "Hymn " . $number . ": The Apostles' Creed";
+    }
+    return ucfirst(strtolower($book)) . ' ' . $number . ': ' . implode(', ', $verses);
+}
+
 function getSlideXml($verseTxt, $pageNumber, $book, $number, $verses)
 {
-    if (strtoupper($book) == "HYMN" && $number == '1') {
-        $title = "Hymn " . $number . ": The Apostles' Creed";
-    } else {
-        $title = ucfirst(strtolower($book)) . ' ' . $number . ': ' . implode(", ", $verses);
-    }
-
-    $title = htmlspecialchars($title, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    $title = htmlspecialchars(getSongTitle($book, $number, $verses), ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
     $beginSlide = '<draw:page draw:name="page'.$pageNumber.'" draw:style-name="dp1" draw:master-page-name="Master1-Office-Theme" '.
     'presentation:presentation-page-layout-name="AL1T0"><office:forms form:automatic-focus="false" form:apply-design-mode="false"/>'.
