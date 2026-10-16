@@ -176,16 +176,19 @@ if ($zip->open($presentationFile, ZipArchive::CREATE) === true) {
     }
     echo "\nPresentation file created: " . $presentationFile . "\n";
     if ($pdfSongs) {
-        $pdfFile = 'Lyrics.pdf';
-        if (!writeLyricsPdf($pdfFile, $pdfSongs)) {
-            // A PDF viewer may lock the previous output on Windows.
-            $pdfFile = 'Lyrics-large-print.pdf';
-            if (!writeLyricsPdf($pdfFile, $pdfSongs)) {
-                echo "Failed to create PDF file: " . $pdfFile . "\n";
-                $pdfFile = null;
+        $pdfFile = null;
+        // Windows PDF viewers can lock an existing file even when it looks writable.
+        for ($attempt = 0; $attempt <= 20; $attempt++) {
+            $candidate = $attempt === 0 ? 'Lyrics.pdf' :
+                ($attempt === 1 ? 'Lyrics-large-print.pdf' : 'Lyrics-large-print-' . $attempt . '.pdf');
+            if (writeLyricsPdf($candidate, $pdfSongs)) {
+                $pdfFile = $candidate;
+                break;
             }
         }
-        if ($pdfFile !== null) {
+        if ($pdfFile === null) {
+            echo "Failed to create PDF file (close any open PDFs and try again).\n";
+        } else {
             echo "PDF file created: " . $pdfFile . "\n";
         }
     }
@@ -197,15 +200,15 @@ if ($zip->open($presentationFile, ZipArchive::CREATE) === true) {
     }
 }
 
-// The PDF is independent of the ODP: each song starts a new A4 page and may continue on later pages.
+// The PDF is independent of the ODP: each song gets a page tall enough for all its stanzas.
 function writeLyricsPdf($filename, $songs)
 {
-    $pageWidth = 595.28;
-    $pageHeight = 841.89;
+    $pageWidth = 841.89;
+    $minimumPageHeight = 595.28;
     $margin = 42;
     $contentWidth = $pageWidth - 2 * $margin;
     $objects = [1 => null, 2 => null,
-        3 => '<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding /WinAnsiEncoding >>'];
+        3 => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>'];
     $pageIds = [];
     $nextId = 4;
 
@@ -214,6 +217,23 @@ function writeLyricsPdf($filename, $songs)
         $titleSize = 28.0;
         $lineHeight = $fontSize * 1.3;
         $titleLines = wrapPdfLines([pdfText($song['title'])], $contentWidth, $titleSize);
+        $stanzas = [];
+        $bodyHeight = 0;
+        foreach ($song['verses'] as $verse) {
+            $verseLines = [];
+            foreach (preg_split('/\R/u', trim($verse)) as $line) {
+                foreach (wrapPdfLines([pdfText(trim($line))], $contentWidth, $fontSize) as $wrappedLine) {
+                    $verseLines[] = $wrappedLine;
+                }
+            }
+            if ($stanzas) {
+                $bodyHeight += $lineHeight;
+            }
+            $bodyHeight += count($verseLines) * $lineHeight;
+            $stanzas[] = $verseLines;
+        }
+        $titleHeight = count($titleLines) * $titleSize * 1.25;
+        $pageHeight = max($minimumPageHeight, 2 * $margin + $titleHeight + $fontSize + $bodyHeight);
         $commands = ["BT", "0 g", '/F2 ' . pdfNumber($titleSize) . ' Tf'];
         $y = $pageHeight - $margin - $titleSize;
         foreach ($titleLines as $line) {
@@ -222,33 +242,11 @@ function writeLyricsPdf($filename, $songs)
         }
         $y -= $fontSize;
         $commands[] = '/F2 ' . pdfNumber($fontSize) . ' Tf';
-        foreach ($song['verses'] as $verseIndex => $verse) {
-            $verseLines = [];
-            foreach (preg_split('/\R/u', trim($verse)) as $line) {
-                foreach (wrapPdfLines([pdfText(trim($line))], $contentWidth, $fontSize) as $wrappedLine) {
-                    $verseLines[] = $wrappedLine;
-                }
+        foreach ($stanzas as $verseIndex => $verseLines) {
+            if ($verseIndex > 0) {
+                $y -= $lineHeight;
             }
-            $stanzaHeight = (count($verseLines) - 1) * $lineHeight;
-            $spaceBefore = $verseIndex > 0 ? $lineHeight : 0;
-            // Keep a stanza together when it fits on a fresh page.
-            if ($y - $spaceBefore - $stanzaHeight < $margin &&
-                $stanzaHeight <= $pageHeight - 2 * $margin - $fontSize) {
-                $commands[] = 'ET';
-                addPdfPage($objects, $pageIds, $nextId, $commands, $pageWidth, $pageHeight);
-                $commands = ["BT", "0 g", '/F2 ' . pdfNumber($fontSize) . ' Tf'];
-                $y = $pageHeight - $margin - $fontSize;
-                $spaceBefore = 0;
-            }
-            $y -= $spaceBefore;
             foreach ($verseLines as $line) {
-                // Exception: a stanza longer than a whole page must continue on the next page.
-                if ($y < $margin) {
-                    $commands[] = 'ET';
-                    addPdfPage($objects, $pageIds, $nextId, $commands, $pageWidth, $pageHeight);
-                    $commands = ["BT", "0 g", '/F2 ' . pdfNumber($fontSize) . ' Tf'];
-                    $y = $pageHeight - $margin - $fontSize;
-                }
                 if ($line !== '') {
                     $commands[] = '1 0 0 1 ' . pdfNumber($margin) . ' ' . pdfNumber($y) . ' Tm (' . pdfEscape($line) . ') Tj';
                 }
@@ -301,27 +299,76 @@ function addPdfPage(&$objects, &$pageIds, &$nextId, $commands, $pageWidth, $page
 
 function pdfText($text)
 {
-    $text = strip_tags($text);
-    $encoded = iconv('UTF-8', 'Windows-1252//TRANSLIT', $text);
-    return $encoded === false ? '' : preg_replace('/[\x00-\x1f\x7f]/', '', $encoded);
+    // Some source lyrics already contain U+FFFD where a character was lost.
+    // Keep the rest of the line readable instead of losing it during PDF conversion.
+    $text = str_replace("\u{FFFD}", '?', strip_tags($text));
+    $encoded = @iconv('UTF-8', 'Windows-1252//TRANSLIT', $text);
+    if ($encoded === false) {
+        $encoded = '';
+        foreach (preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY) as $character) {
+            $converted = @iconv('UTF-8', 'Windows-1252//TRANSLIT', $character);
+            $encoded .= $converted === false ? '?' : $converted;
+        }
+    }
+    return preg_replace('/[\x00-\x1f\x7f]/', '', $encoded);
 }
 
 function wrapPdfLines($lines, $width, $fontSize)
 {
-    // Courier glyphs are all 0.6 em wide; wrapping is measured, not guessed.
-    $maxChars = max(1, (int)floor($width / ($fontSize * 0.6)));
     $wrapped = [];
     foreach ($lines as $line) {
+        $line = trim($line);
         if ($line === '') {
             $wrapped[] = '';
             continue;
         }
-        $wrappedLine = wordwrap($line, $maxChars, "\n", true);
-        foreach (explode("\n", $wrappedLine) as $part) {
-            $wrapped[] = $part;
+        $current = '';
+        foreach (preg_split('/\s+/', $line) as $word) {
+            $candidate = $current === '' ? $word : $current . ' ' . $word;
+            if (pdfTextWidth($candidate, $fontSize) <= $width) {
+                $current = $candidate;
+                continue;
+            }
+            if ($current !== '') {
+                $wrapped[] = $current;
+                $current = '';
+            }
+            // A single very long word may still need to wrap to stay inside the right margin.
+            foreach (str_split($word) as $character) {
+                if ($current !== '' && pdfTextWidth($current . $character, $fontSize) > $width) {
+                    $wrapped[] = $current;
+                    $current = '';
+                }
+                $current .= $character;
+            }
+        }
+        if ($current !== '') {
+            $wrapped[] = $current;
         }
     }
     return $wrapped;
+}
+
+function pdfTextWidth($text, $fontSize)
+{
+    // Helvetica-Bold widths in thousandths of an em (standard PDF font metrics).
+    static $widths = null;
+    if ($widths === null) {
+        $widths = array_map('intval', explode(' ',
+            '278 333 474 556 556 889 722 278 333 333 389 584 278 333 278 278 ' .
+            '556 556 556 556 556 556 556 556 556 556 333 333 584 584 584 611 ' .
+            '975 722 722 722 722 667 611 778 722 278 556 722 611 833 722 778 ' .
+            '667 778 722 667 611 722 722 944 722 722 667 333 278 333 584 556 ' .
+            '278 556 611 556 611 556 333 611 611 278 278 556 278 889 611 611 ' .
+            '611 611 389 556 333 611 556 778 556 556 500 389 280 389 584'));
+    }
+    $units = 0;
+    foreach (str_split($text) as $character) {
+        $code = ord($character);
+        // Non-ASCII Windows-1252 punctuation and accented letters are at most 1 em wide.
+        $units += $code >= 32 && $code <= 126 ? $widths[$code - 32] : 1000;
+    }
+    return $units * $fontSize / 1000;
 }
 
 function pdfEscape($text)
