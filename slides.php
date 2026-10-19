@@ -18,7 +18,7 @@ if (count($psalmsAndHymns) === 0) {
 $psalmsAndHymns = array_map('trim', $psalmsAndHymns);
 
 $allSongVersesInTxt = '';
-$pdfSongs = [];
+$documentSongs = [];
 $pageNumber = 0;
 
 // Loop through each psalm/hymn
@@ -85,7 +85,7 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
     // Loop through each verse
     $versesPerSlide = 0;
     $slideContent = '';
-    $pdfVerses = [];
+    $documentVerses = [];
     $includedVerses = [];
 
     foreach ($verses as $verse) {
@@ -101,7 +101,7 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
             continue;
         }
 
-        $pdfVerses[] = $verseTxt;
+        $documentVerses[] = $verseTxt;
         $includedVerses[] = $verse;
 
         if ($book == "HYMN" && $number == 1) {
@@ -133,8 +133,8 @@ foreach ($psalmsAndHymns as $psalmOrHymn) {
         // We still have content to add to the last slide
         $allSongVersesInTxt .= getSlideXml($slideContent, ++$pageNumber, $book, $number, $verses);
     }
-    if ($pdfVerses) {
-        $pdfSongs[] = ['title' => getSongTitle($book, $number, $includedVerses), 'verses' => $pdfVerses];
+    if ($documentVerses) {
+        $documentSongs[] = ['title' => getSongTitle($book, $number, $includedVerses), 'verses' => $documentVerses];
     }
 }
 
@@ -175,21 +175,13 @@ if ($zip->open($presentationFile, ZipArchive::CREATE) === true) {
         exit;
     }
     echo "\nPresentation file created: " . $presentationFile . "\n";
-    if ($pdfSongs) {
-        $pdfFile = null;
-        // Windows PDF viewers can lock an existing file even when it looks writable.
-        for ($attempt = 0; $attempt <= 20; $attempt++) {
-            $candidate = $attempt === 0 ? 'Lyrics.pdf' :
-                ($attempt === 1 ? 'Lyrics-large-print.pdf' : 'Lyrics-large-print-' . $attempt . '.pdf');
-            if (writeLyricsPdf($candidate, $pdfSongs)) {
-                $pdfFile = $candidate;
-                break;
-            }
-        }
-        if ($pdfFile === null) {
-            echo "Failed to create PDF file (close any open PDFs and try again).\n";
+    if ($documentSongs) {
+        $documentFile = 'Lyrics.odt';
+        if (writeLyricsOdt($documentFile, $documentSongs)) {
+            echo "Text document created: " . $documentFile . "\n";
         } else {
-            echo "PDF file created: " . $pdfFile . "\n";
+            echo "Failed to create text document: " . $documentFile .
+                " (close it if it is open and try again).\n";
         }
     }
 } else {
@@ -200,185 +192,99 @@ if ($zip->open($presentationFile, ZipArchive::CREATE) === true) {
     }
 }
 
-// The PDF is independent of the ODP: each song gets a page tall enough for all its stanzas.
-function writeLyricsPdf($filename, $songs)
+// An ODT is a ZIP archive with a stored mimetype entry and XML document parts.
+function writeLyricsOdt($filename, $songs)
 {
-    $pageWidth = 841.89;
-    $minimumPageHeight = 595.28;
-    $margin = 42;
-    $contentWidth = $pageWidth - 2 * $margin;
-    $objects = [1 => null, 2 => null,
-        3 => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>'];
-    $pageIds = [];
-    $nextId = 4;
+    $titleProperties = '<style:paragraph-properties ' .
+        'fo:margin-left="0cm" fo:margin-right="0cm" fo:margin-top="0.35cm" ' .
+        'fo:margin-bottom="0.25cm" fo:keep-with-next="always"/>' .
+        '<style:text-properties fo:font-family="Helvetica" fo:font-size="26pt" fo:font-weight="bold"/>';
+    $content = '<?xml version="1.0" encoding="UTF-8"?>' .
+        '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" ' .
+        'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" ' .
+        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" ' .
+        'xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.2">' .
+        '<office:automatic-styles>' .
+        '<style:style style:name="SongTitle" style:family="paragraph">' . $titleProperties . '</style:style>' .
+        '<style:style style:name="FirstSongTitle" style:family="paragraph" ' .
+        'style:master-page-name="Standard">' . $titleProperties . '</style:style>' .
+        '<style:style style:name="Lyric" style:family="paragraph"><style:paragraph-properties ' .
+        'fo:margin-left="0cm" fo:margin-right="0cm" fo:margin-top="0cm" ' .
+        'fo:margin-bottom="0cm" fo:line-height="130%" fo:keep-with-next="always"/>' .
+        '<style:text-properties fo:font-family="Helvetica" fo:font-size="20pt" fo:font-weight="bold"/>' .
+        '</style:style>' .
+        '<style:style style:name="Stanza" style:family="paragraph"><style:paragraph-properties ' .
+        'fo:margin-left="0cm" fo:margin-right="0cm" fo:margin-top="0cm" ' .
+        'fo:margin-bottom="0.35cm" fo:line-height="130%"/>' .
+        '<style:text-properties fo:font-family="Helvetica" fo:font-size="20pt" fo:font-weight="bold"/>' .
+        '</style:style>' .
+        '<style:style style:name="Italic" style:family="text"><style:text-properties fo:font-style="italic"/>' .
+        '</style:style></office:automatic-styles><office:body><office:text>';
 
-    foreach ($songs as $song) {
-        $fontSize = 22.0;
-        $titleSize = 28.0;
-        $lineHeight = $fontSize * 1.3;
-        $titleLines = wrapPdfLines([pdfText($song['title'])], $contentWidth, $titleSize);
-        $stanzas = [];
-        $bodyHeight = 0;
+    foreach ($songs as $index => $song) {
+        $titleStyle = $index === 0 ? 'FirstSongTitle' : 'SongTitle';
+        $content .= '<text:h text:style-name="' . $titleStyle . '" text:outline-level="1">' .
+            htmlspecialchars($song['title'], ENT_XML1 | ENT_QUOTES, 'UTF-8') . '</text:h>';
         foreach ($song['verses'] as $verse) {
-            $verseLines = [];
-            foreach (preg_split('/\R/u', trim($verse)) as $line) {
-                foreach (wrapPdfLines([pdfText(trim($line))], $contentWidth, $fontSize) as $wrappedLine) {
-                    $verseLines[] = $wrappedLine;
-                }
-            }
-            if ($stanzas) {
-                $bodyHeight += $lineHeight;
-            }
-            $bodyHeight += count($verseLines) * $lineHeight;
-            $stanzas[] = $verseLines;
-        }
-        $titleHeight = count($titleLines) * $titleSize * 1.25;
-        $pageHeight = max($minimumPageHeight, 2 * $margin + $titleHeight + $fontSize + $bodyHeight);
-        $commands = ["BT", "0 g", '/F2 ' . pdfNumber($titleSize) . ' Tf'];
-        $y = $pageHeight - $margin - $titleSize;
-        foreach ($titleLines as $line) {
-            $commands[] = '1 0 0 1 ' . pdfNumber($margin) . ' ' . pdfNumber($y) . ' Tm (' . pdfEscape($line) . ') Tj';
-            $y -= $titleSize * 1.25;
-        }
-        $y -= $fontSize;
-        $commands[] = '/F2 ' . pdfNumber($fontSize) . ' Tf';
-        foreach ($stanzas as $verseIndex => $verseLines) {
-            if ($verseIndex > 0) {
-                $y -= $lineHeight;
-            }
-            foreach ($verseLines as $line) {
-                if ($line !== '') {
-                    $commands[] = '1 0 0 1 ' . pdfNumber($margin) . ' ' . pdfNumber($y) . ' Tm (' . pdfEscape($line) . ') Tj';
-                }
-                $y -= $lineHeight;
+            $lines = preg_split('/\R/u', trim($verse));
+            $lineCount = count($lines);
+            foreach ($lines as $index => $line) {
+                $style = $index === $lineCount - 1 ? 'Stanza' : 'Lyric';
+                $content .= '<text:p text:style-name="' . $style . '">' . odtLyricLine(trim($line)) . '</text:p>';
             }
         }
-        $commands[] = 'ET';
-        addPdfPage($objects, $pageIds, $nextId, $commands, $pageWidth, $pageHeight);
     }
+    $content .= '</office:text></office:body></office:document-content>';
 
-    $objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
-    $objects[2] = '<< /Type /Pages /Kids [' . implode(' ', $pageIds) . '] /Count ' . count($pageIds) . ' >>';
-    ksort($objects);
-    $pdf = "%PDF-1.4\n";
-    $offsets = [0];
-    foreach ($objects as $id => $object) {
-        $offsets[$id] = strlen($pdf);
-        $pdf .= $id . " 0 obj\n" . $object . "\nendobj\n";
-    }
-    $xref = strlen($pdf);
-    $pdf .= 'xref' . "\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
-    foreach ($objects as $id => $object) {
-        $pdf .= sprintf('%010d 00000 n ', $offsets[$id]) . "\n";
-    }
-    $pdf .= 'trailer' . "\n<< /Size " . (count($objects) + 1) . ' /Root 1 0 R >>' .
-        "\nstartxref\n" . $xref . "\n%%EOF\n";
-    if (is_file($filename) && !is_writable($filename)) {
+    $styles = '<?xml version="1.0" encoding="UTF-8"?>' .
+        '<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" ' .
+        'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" ' .
+        'xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.2">' .
+        '<office:styles><style:default-style style:family="paragraph"><style:text-properties ' .
+        'fo:font-family="Helvetica" fo:font-size="22pt" fo:font-weight="bold"/>' .
+        '<style:paragraph-properties fo:margin-left="0.5cm" fo:margin-right="0.5cm"/>' .
+        '</style:default-style></office:styles><office:automatic-styles>' .
+        '<style:page-layout style:name="Standard"><style:page-layout-properties ' .
+        'fo:page-width="21cm" fo:page-height="29.7cm" style:print-orientation="portrait" ' .
+        'fo:margin-left="0.5cm" fo:margin-right="0.5cm" fo:margin-top="1.5cm" fo:margin-bottom="1.5cm"/>' .
+        '</style:page-layout></office:automatic-styles><office:master-styles>' .
+        '<style:master-page style:name="Standard" style:page-layout-name="Standard"/>' .
+        '</office:master-styles></office:document-styles>';
+    $manifest = '<?xml version="1.0" encoding="UTF-8"?>' .
+        '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" ' .
+        'manifest:version="1.2"><manifest:file-entry manifest:full-path="/" ' .
+        'manifest:media-type="application/vnd.oasis.opendocument.text"/>' .
+        '<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>' .
+        '<manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/>' .
+        '</manifest:manifest>';
+    $zip = new ZipArchive();
+    if ($zip->open($filename, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
         return false;
     }
-    $handle = @fopen($filename, 'wb');
-    if ($handle === false) {
-        return false;
-    }
-    $written = fwrite($handle, $pdf);
-    fclose($handle);
-    return $written === strlen($pdf);
+    $ok = $zip->addFromString('mimetype', 'application/vnd.oasis.opendocument.text') &&
+        $zip->setCompressionName('mimetype', ZipArchive::CM_STORE) &&
+        $zip->addFromString('content.xml', $content) &&
+        $zip->addFromString('styles.xml', $styles) &&
+        $zip->addFromString('META-INF/manifest.xml', $manifest);
+    return $zip->close() && $ok;
 }
 
-function addPdfPage(&$objects, &$pageIds, &$nextId, $commands, $pageWidth, $pageHeight)
+function odtLyricLine($line)
 {
-    $stream = implode("\n", $commands) . "\n";
-    $contentId = $nextId++;
-    $pageId = $nextId++;
-    $objects[$contentId] = '<< /Length ' . strlen($stream) . " >>\nstream\n" . $stream . 'endstream';
-    $objects[$pageId] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' .
-        pdfNumber($pageWidth) . ' ' . pdfNumber($pageHeight) . '] /Resources << /Font << /F2 3 0 R >> >> ' .
-        '/Contents ' . $contentId . ' 0 R >>';
-    $pageIds[] = $pageId . ' 0 R';
-}
-
-function pdfText($text)
-{
-    // Some source lyrics already contain U+FFFD where a character was lost.
-    // Keep the rest of the line readable instead of losing it during PDF conversion.
-    $text = str_replace("\u{FFFD}", '?', strip_tags($text));
-    $encoded = @iconv('UTF-8', 'Windows-1252//TRANSLIT', $text);
-    if ($encoded === false) {
-        $encoded = '';
-        foreach (preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY) as $character) {
-            $converted = @iconv('UTF-8', 'Windows-1252//TRANSLIT', $character);
-            $encoded .= $converted === false ? '?' : $converted;
+    $parts = preg_split('/(<i>|<\/i>)/', $line, -1, PREG_SPLIT_DELIM_CAPTURE);
+    $xml = '';
+    $italic = false;
+    foreach ($parts as $part) {
+        if ($part === '<i>') {
+            $italic = true;
+        } elseif ($part === '</i>') {
+            $italic = false;
+        } elseif ($part !== '') {
+            $text = htmlspecialchars($part, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+            $xml .= $italic ? '<text:span text:style-name="Italic">' . $text . '</text:span>' : $text;
         }
     }
-    return preg_replace('/[\x00-\x1f\x7f]/', '', $encoded);
-}
-
-function wrapPdfLines($lines, $width, $fontSize)
-{
-    $wrapped = [];
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if ($line === '') {
-            $wrapped[] = '';
-            continue;
-        }
-        $current = '';
-        foreach (preg_split('/\s+/', $line) as $word) {
-            $candidate = $current === '' ? $word : $current . ' ' . $word;
-            if (pdfTextWidth($candidate, $fontSize) <= $width) {
-                $current = $candidate;
-                continue;
-            }
-            if ($current !== '') {
-                $wrapped[] = $current;
-                $current = '';
-            }
-            // A single very long word may still need to wrap to stay inside the right margin.
-            foreach (str_split($word) as $character) {
-                if ($current !== '' && pdfTextWidth($current . $character, $fontSize) > $width) {
-                    $wrapped[] = $current;
-                    $current = '';
-                }
-                $current .= $character;
-            }
-        }
-        if ($current !== '') {
-            $wrapped[] = $current;
-        }
-    }
-    return $wrapped;
-}
-
-function pdfTextWidth($text, $fontSize)
-{
-    // Helvetica-Bold widths in thousandths of an em (standard PDF font metrics).
-    static $widths = null;
-    if ($widths === null) {
-        $widths = array_map('intval', explode(' ',
-            '278 333 474 556 556 889 722 278 333 333 389 584 278 333 278 278 ' .
-            '556 556 556 556 556 556 556 556 556 556 333 333 584 584 584 611 ' .
-            '975 722 722 722 722 667 611 778 722 278 556 722 611 833 722 778 ' .
-            '667 778 722 667 611 722 722 944 722 722 667 333 278 333 584 556 ' .
-            '278 556 611 556 611 556 333 611 611 278 278 556 278 889 611 611 ' .
-            '611 611 389 556 333 611 556 778 556 556 500 389 280 389 584'));
-    }
-    $units = 0;
-    foreach (str_split($text) as $character) {
-        $code = ord($character);
-        // Non-ASCII Windows-1252 punctuation and accented letters are at most 1 em wide.
-        $units += $code >= 32 && $code <= 126 ? $widths[$code - 32] : 1000;
-    }
-    return $units * $fontSize / 1000;
-}
-
-function pdfEscape($text)
-{
-    return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $text);
-}
-
-function pdfNumber($number)
-{
-    return rtrim(rtrim(sprintf('%.2f', $number), '0'), '.');
+    return $xml;
 }
 
 function countNonemptyLines($text)
