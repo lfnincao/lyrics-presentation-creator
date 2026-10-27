@@ -211,12 +211,12 @@ function writeLyricsOdt($filename, $songs)
         '<style:style style:name="Lyric" style:family="paragraph"><style:paragraph-properties ' .
         'fo:margin-left="0cm" fo:margin-right="0cm" fo:margin-top="0cm" ' .
         'fo:margin-bottom="0cm" fo:line-height="130%" fo:keep-with-next="always"/>' .
-        '<style:text-properties fo:font-family="Helvetica" fo:font-size="20pt" fo:font-weight="bold"/>' .
+        '<style:text-properties fo:font-family="Helvetica" fo:font-size="18pt" fo:font-weight="bold"/>' .
         '</style:style>' .
         '<style:style style:name="Stanza" style:family="paragraph"><style:paragraph-properties ' .
         'fo:margin-left="0cm" fo:margin-right="0cm" fo:margin-top="0cm" ' .
-        'fo:margin-bottom="0.35cm" fo:line-height="130%"/>' .
-        '<style:text-properties fo:font-family="Helvetica" fo:font-size="20pt" fo:font-weight="bold"/>' .
+        'fo:margin-bottom="26pt" fo:line-height="130%"/>' .
+        '<style:text-properties fo:font-family="Helvetica" fo:font-size="18pt" fo:font-weight="bold"/>' .
         '</style:style>' .
         '<style:style style:name="Italic" style:family="text"><style:text-properties fo:font-style="italic"/>' .
         '</style:style></office:automatic-styles><office:body><office:text>';
@@ -246,7 +246,7 @@ function writeLyricsOdt($filename, $songs)
         '</style:default-style></office:styles><office:automatic-styles>' .
         '<style:page-layout style:name="Standard"><style:page-layout-properties ' .
         'fo:page-width="21cm" fo:page-height="29.7cm" style:print-orientation="portrait" ' .
-        'fo:margin-left="0.5cm" fo:margin-right="0.5cm" fo:margin-top="1.5cm" fo:margin-bottom="1.5cm"/>' .
+        'fo:margin-left="1cm" fo:margin-right="0.5cm" fo:margin-top="1.5cm" fo:margin-bottom="1.5cm"/>' .
         '</style:page-layout></office:automatic-styles><office:master-styles>' .
         '<style:master-page style:name="Standard" style:page-layout-name="Standard"/>' .
         '</office:master-styles></office:document-styles>';
